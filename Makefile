@@ -155,3 +155,9 @@ crossplane.help:
 help-special: crossplane.help
 
 .PHONY: crossplane.help help-special
+
+ci: $(UP)
+	@echo "export XPKG_OUTPUT_DIR=$(XPKG_OUTPUT_DIR)"
+	@echo "export XPKG_FILE=$(XPKG_OUTPUT_DIR)/linux_amd64/provider-sql-$(VERSION).xpkg"
+	@echo "export VERSION=$(VERSION)"
+	@echo "export UP=$(UP)"

@@ -3,16 +3,17 @@ name: CI
 on:
   push:
     branches:
-      - master
-      - release-*
-  pull_request: {}
+      - nesto-master
+  pull_request:
+    branches:
+      - nesto-master
   workflow_dispatch: {}
 
 env:
   # Common versions
-  GO_VERSION: '1.21'
-  GOLANGCI_VERSION: 'v1.54.0'
-  DOCKER_BUILDX_VERSION: 'v0.8.2'
+  GO_VERSION: "1.21"
+  GOLANGCI_VERSION: "v1.54.0"
+  DOCKER_BUILDX_VERSION: "v0.8.2"
 
   # Common users. We can't run a step 'if secrets.AWS_USR != ""' but we can run
   # a step 'if env.AWS_USR' != ""', so we copy these to succinctly test whether
@@ -35,7 +36,6 @@ jobs:
           paths_ignore: '["**.md", "**.png", "**.jpg"]'
           do_not_skip: '["workflow_dispatch", "schedule", "push"]'
           concurrent_skipping: false
-
 
   lint:
     runs-on: ubuntu-20.04
@@ -292,42 +292,15 @@ jobs:
           # builds by default. Specifying --load does so.
           BUILD_ARGS: "--load"
 
-      - name: Publish Artifacts to GitHub
-        uses: actions/upload-artifact@v2
+      - name: Login to GAR
+        uses: docker/login-action@v3
         with:
-          name: output
-          path: _output/**
+          registry: northamerica-northeast1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.GCP_DOCKER_SA_KEY }}
 
-      - name: Login to Docker
-        uses: docker/login-action@v1
-        if: env.CONTRIB_DOCKER_USR != ''
-        with:
-          username: ${{ secrets.CONTRIB_DOCKER_USR }}
-          password: ${{ secrets.CONTRIB_DOCKER_PSW }}
-
-      - name: Login to Upbound
-        uses: docker/login-action@v1
-        if: env.XPKG_ACCESS_ID != ''
-        with:
-          registry: xpkg.upbound.io
-          username: ${{ secrets.XPKG_ACCESS_ID }}
-          password: ${{ secrets.XPKG_TOKEN }}
-
-      - name: Publish Artifacts to S3 and Docker Hub
-        run: make -j2 publish BRANCH_NAME=${GITHUB_REF##*/}
-        if: env.AWS_USR != '' && env.CONTRIB_DOCKER_USR != ''
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_USR }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PSW }}
-          GIT_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCS_GIT_USR: ${{ secrets.UPBOUND_BOT_GITHUB_USR }}
-          DOCS_GIT_PSW: ${{ secrets.UPBOUND_BOT_GITHUB_PSW }}
-
-      - name: Promote Artifacts in S3 and Docker Hub
-        if: github.ref == 'refs/heads/master' && env.AWS_USR != '' && env.CONTRIB_DOCKER_USR != ''
-        run: make -j2 promote
-        env:
-          BRANCH_NAME: master
-          CHANNEL: master
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_USR }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_PSW }}
+      - name: Publish Artifacts to GAR
+        run: |
+          . <(make ci)
+          $UP xpkg push --package $XPKG_FILE \
+            northamerica-northeast1-docker.pkg.dev/nesto-ci-78a3f2e6/crossplane/provider-sql:$VERSION
