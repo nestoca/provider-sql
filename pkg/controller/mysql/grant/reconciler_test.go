@@ -74,7 +74,7 @@ func TestConnect(t *testing.T) {
 	type fields struct {
 		kube  client.Client
 		usage resource.Tracker
-		newDB func(creds map[string][]byte, tls *string) xsql.DB
+		newDB func(creds map[string][]byte, tls *string, binlog *bool) xsql.DB
 	}
 
 	type args struct {
@@ -1230,11 +1230,11 @@ func Test_diffPermissions(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			gotToGrant, gotToRevoke := diffPermissions(tc.args.desired, tc.args.observed)
-			if diff := cmp.Diff(tc.want.toGrant, gotToGrant, equateSlices()...); diff != "" {
+			gotToGrant, gotToRevoke := diffPermissions(tc.desired, tc.observed)
+			if diff := cmp.Diff(tc.toGrant, gotToGrant, equateSlices()...); diff != "" {
 				t.Errorf("\ndiffPermissions(...): -want toGrant, +got toGrant:\n%s", diff)
 			}
-			if diff := cmp.Diff(tc.want.toRevoke, gotToRevoke, equateSlices()...); diff != "" {
+			if diff := cmp.Diff(tc.toRevoke, gotToRevoke, equateSlices()...); diff != "" {
 				t.Errorf("\ndiffPermissions(...): -want toRevoke, +got toRevoke:\n%s", diff)
 			}
 		})

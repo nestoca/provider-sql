@@ -31,6 +31,7 @@ import (
 	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
 	xpcontroller "github.com/crossplane/crossplane-runtime/pkg/controller"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
+	"github.com/crossplane/crossplane-runtime/pkg/feature"
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
@@ -62,13 +63,19 @@ func Setup(mgr ctrl.Manager, o xpcontroller.Options) error {
 	name := managed.ControllerName(v1alpha1.SchemaGroupKind)
 
 	t := resource.NewProviderConfigUsageTracker(mgr.GetClient(), &v1alpha1.ProviderConfigUsage{})
-	r := managed.NewReconciler(mgr,
-		resource.ManagedKind(v1alpha1.SchemaGroupVersionKind),
+	reconcilerOptions := []managed.ReconcilerOption{
 		managed.WithExternalConnecter(&connector{kube: mgr.GetClient(), usage: t, newDB: postgresql.New}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithPollInterval(o.PollInterval),
-		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))))
-
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+	}
+	if o.Features.Enabled(feature.EnableBetaManagementPolicies) {
+		reconcilerOptions = append(reconcilerOptions, managed.WithManagementPolicies())
+	}
+	r := managed.NewReconciler(mgr,
+		resource.ManagedKind(v1alpha1.SchemaGroupVersionKind),
+		reconcilerOptions...,
+	)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&v1alpha1.Schema{}).
@@ -167,16 +174,14 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalCreation{}, errors.New(errNotSchema)
 	}
 
-	var b strings.Builder
-	b.WriteString("CREATE SCHEMA IF NOT EXISTS ")
-	b.WriteString(pq.QuoteIdentifier(meta.GetExternalName(cr)))
+	var queries []xsql.Query
 
-	if cr.Spec.ForProvider.Role != nil {
-		b.WriteString(" AUTHORIZATION ")
-		b.WriteString(pq.QuoteIdentifier(*cr.Spec.ForProvider.Role))
-	}
+	cr.SetConditions(xpv1.Creating())
 
-	return managed.ExternalCreation{}, errors.Wrap(c.db.Exec(ctx, xsql.Query{String: b.String()}), errCreateSchema)
+	createSchemaQueries(cr.Spec.ForProvider, &queries, meta.GetExternalName(cr))
+
+	err := c.db.ExecTx(ctx, queries)
+	return managed.ExternalCreation{}, errors.Wrap(err, errCreateSchema)
 }
 
 func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) { //nolint:gocyclo
@@ -189,13 +194,10 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalUpdate{}, nil
 	}
 
-	var b strings.Builder
-	b.WriteString("ALTER SCHEMA ")
-	b.WriteString(pq.QuoteIdentifier(meta.GetExternalName(mg)))
-	b.WriteString(" OWNER TO ")
-	b.WriteString(pq.QuoteIdentifier(*cr.Spec.ForProvider.Role))
+	var queries []xsql.Query
+	updateSchemaQueries(cr.Spec.ForProvider, &queries, meta.GetExternalName(cr))
 
-	err := c.db.Exec(ctx, xsql.Query{String: b.String()})
+	err := c.db.ExecTx(ctx, queries)
 	return managed.ExternalUpdate{}, errors.Wrap(err, errAlterSchema)
 }
 
@@ -225,4 +227,47 @@ func lateInit(observed v1alpha1.SchemaParameters, desired *v1alpha1.SchemaParame
 	}
 
 	return li
+}
+
+func createSchemaQueries(sp v1alpha1.SchemaParameters, ql *[]xsql.Query, en string) { // nolint: gocyclo
+
+	var b strings.Builder
+	b.WriteString("CREATE SCHEMA IF NOT EXISTS ")
+	b.WriteString(pq.QuoteIdentifier(en))
+
+	if sp.Role != nil {
+		b.WriteString(" AUTHORIZATION ")
+		b.WriteString(pq.QuoteIdentifier(*sp.Role))
+		b.WriteString(";")
+	}
+
+	*ql = append(*ql,
+		xsql.Query{String: b.String()},
+	)
+
+	if sp.RevokePublicOnSchema != nil && *sp.RevokePublicOnSchema {
+		*ql = append(*ql,
+			xsql.Query{String: "REVOKE ALL ON SCHEMA PUBLIC FROM PUBLIC;"},
+		)
+	}
+
+}
+
+func updateSchemaQueries(sp v1alpha1.SchemaParameters, ql *[]xsql.Query, en string) { // nolint: gocyclo
+
+	var b strings.Builder
+	b.WriteString("ALTER SCHEMA ")
+	b.WriteString(pq.QuoteIdentifier(en))
+	b.WriteString(" OWNER TO ")
+	b.WriteString(pq.QuoteIdentifier(*sp.Role))
+
+	*ql = append(*ql,
+		xsql.Query{String: b.String()},
+	)
+
+	if sp.RevokePublicOnSchema != nil && *sp.RevokePublicOnSchema {
+		*ql = append(*ql,
+			xsql.Query{String: "REVOKE ALL ON SCHEMA PUBLIC FROM PUBLIC;"},
+		)
+	}
 }
